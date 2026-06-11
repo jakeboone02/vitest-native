@@ -1,6 +1,10 @@
 # vitest-native
 
-A Vitest plugin for React Native. One install, zero config.
+Run your React Native tests under Vitest, against **real React Native** — the same JavaScript that ships in your app, with only the native-module boundary mocked. That is the default and the point of the project. A lightweight pure-JS mock engine is available as an opt-in for fast, RN-free unit tests.
+
+> **Beta.** The real-RN engine is validated against real apps (react-native-paper, the obytes template, Rocket.Chat) across React Native 0.81–0.84, with a CI-gated behavioral cross-check against real RN. Some APIs may still shift before 1.0.
+>
+> Spiritual successor to [`vitest-community/vitest-react-native`](https://github.com/vitest-community/vitest-react-native) — same core idea (externalize RN, run its real JS under Node), rebuilt for modern Vitest (4+).
 
 ---
 
@@ -14,6 +18,9 @@ A Vitest plugin for React Native. One install, zero config.
 - [React Native Test Suite Conformance](#react-native-test-suite-conformance)
 - [Test Helpers](#test-helpers)
 - [Auto-Detect Presets](#auto-detect-presets)
+- [Migrating from `vitest-react-native`](#migrating-from-vitest-react-native)
+- [Migrating from Jest](#migrating-from-jest)
+- [Troubleshooting](#troubleshooting)
 - [RNTL Matchers](#rntl-matchers)
 - [Animated Matchers (Reanimated)](#animated-matchers-reanimated)
 - [Snapshot Serializer](#snapshot-serializer)
@@ -31,13 +38,13 @@ Testing React Native code with Jest has traditionally required a patchwork of co
 
 `vitest-native` replaces all of that with a single Vite plugin:
 
-- **One line of config.** Add the plugin and every mock, resolver, and setup file is handled for you.
-- **Vitest-native speed.** Vitest runs on Vite's dev server -- no cold starts, native ESM, and fast HMR-driven watch mode.
-- **Comprehensive mocks.** 21 components and 25+ APIs are mocked out of the box, with full TypeScript types.
-- **Auto-detect presets.** The plugin scans your `node_modules` and automatically mocks third-party libraries like Reanimated, Gesture Handler, and Expo modules.
-- **Test helpers.** Switch platform, dimensions, and color scheme in a single function call -- no manual mock wiring.
+- **Real React Native, by default.** `reactNative()` with no options runs React Native's real JavaScript — the same source that ships in your app — mocking only the native-module boundary. Jest's preset replaces many components and modules (`View`, `Text`, `ScrollView`, `Linking`, `AccessibilityInfo`, `Image`, …) with stubs; vitest-native runs the real ones. See [`engine`](#engine).
+- **The runner you already use.** Already on Vitest for web? Write your React Native tests in the same runner — same config patterns, native ESM, watch mode, and UI. One test stack across web and native.
+- **No Jest config patchwork.** Add one plugin instead of custom transformers, `transformIgnorePatterns`, and brittle `jest.setup.js` mock files.
+- **Auto-detect presets.** The plugin scans your `node_modules` and shadows native-runtime libraries (Reanimated, Gesture Handler, Safe Area, Navigation) automatically — under both engines.
+- **Opt-in mock engine.** Prefer no React Native at all for a pure-logic suite? `engine: 'mock'` reimplements RN in pure JS with **zero extra dependencies**. It is the escape hatch, not the headline — see [Choosing an engine](#engine).
 
-If you are already using Vitest for your web projects, `vitest-native` lets you use the same tool, the same config patterns, and the same test runner for React Native.
+> **Coming from Jest?** This is not a drop-in swap. New tests are friction-free; an existing Jest suite needs porting off `@react-native/jest-preset`, `@jest/globals`, and `jest.mock('react-native')`. See [Migrating from Jest](#migrating-from-jest). Coming from `vitest-react-native`? You are already vitest-shaped — migration is close to a package swap.
 
 ---
 
@@ -111,6 +118,7 @@ import { reactNative } from 'vitest-native';
 export default defineConfig({
   plugins: [
     reactNative({
+      engine: 'auto',          // 'auto' | 'mock' | 'native' — auto → native when RN's babel deps are present, else mock
       platform: 'ios',        // 'ios' | 'android' (default: 'ios')
       presets: [],             // Preset[] -- omit for auto-detect
       mocks: {},               // Custom mock overrides for the react-native module
@@ -123,17 +131,58 @@ export default defineConfig({
 
 | Option | Type | Default | Description |
 |---|---|---|---|
+| `engine` | `'auto' \| 'mock' \| 'native'` | `'auto'` | How React Native is provided to your tests. `auto` runs real RN (native) when available, else mock. See [`engine`](#engine) below. |
 | `platform` | `'ios' \| 'android'` | `'ios'` | Target platform. Controls `Platform.OS`, version defaults, and file extension resolution. |
 | `presets` | `Preset[]` | auto-detect | Built-in library presets. When omitted, installed packages are detected automatically. Only built-in presets are supported; for custom module mocking, use `vi.mock()` in a setup file. |
 | `mocks` | `Record<string, any>` | `{}` | JSON-serializable overrides merged into the `react-native` module mock. Function values are not supported; use `vi.mock()` in a setup file for function-based overrides. |
 | `diagnostics` | `boolean` | `false` | Log plugin activity to the console for debugging. |
 | `assetExts` | `string[]` | `[]` | Additional file extensions to stub as asset imports (beyond the built-in set). |
+| `transform` | `string[]` | `[]` | **`engine: 'native'` only.** Extra `node_modules` packages whose source the native engine should transform (Flow/TS/JSX stripped) as it loads them — for third-party RN libraries that ship untranspiled source (e.g. `react-native-reanimated`). Analogous to Jest's `transformIgnorePatterns` allowlist. |
+
+### `engine`
+
+Choose how React Native is provided to your tests:
+
+- `'native'` — runs the **real** React Native JavaScript (component logic, prop
+  computation, validation, reconciliation), mocking only the native module boundary that
+  requires a device. Jest's `react-native` preset replaces many of these modules with
+  stubs, so the native engine exercises behavior Jest's mocks skip (see [Fidelity](#fidelity)
+  below). Best for components, integration, RNTL, virtualized lists, and anywhere a false
+  pass is costly. Requires `@react-native/babel-preset` and `@babel/core` (present by
+  default in React Native apps).
+- `'mock'` — a lightweight, pure-JS reimplementation of React Native with **zero extra
+  dependencies**. Best for pure-logic/unit tests, maximum determinism, or when you can't
+  add the babel deps. Like Jest's preset, it is a simplification — see [Fidelity](#fidelity).
+- `'auto'` *(default)* — picks automatically, and **resolves to `'native'`** whenever
+  `@react-native/babel-preset` and `@babel/core` are present (i.e. in any real RN app). It
+  falls back to `'mock'` only when those deps are absent, printing one line to explain why.
+  So `reactNative()` with no options runs real React Native. Set `engine: 'mock'` to opt out.
+
+```ts
+reactNative({ engine: 'native' })
+```
+
+#### Fidelity
+
+Jest's `react-native` preset replaces many real modules with stubs, so behavior they
+don't implement passes silently. The `native` engine runs the real implementations, so
+those checks actually run. For example:
+
+| Behavior | `engine: 'native'` (real RN) | Jest `react-native` preset |
+|---|---|---|
+| `Linking.openURL(123)` | throws `Invalid URL: should be a string` | accepts without validating |
+| `Linking.openURL('')` | throws `Invalid URL: cannot be empty` | accepts without validating |
+| `<Text>` host props | `accessible`, `allowFontScaling`, `ellipsizeMode` computed by real `Text.js` | not set |
+
+The `mock` engine is a simplification too, so it diverges from real RN the same way — reach
+for `native` when a false pass would be costly. These specific differences are produced by
+the cross-check/fidelity harnesses in the repository's `bench/` directory.
 
 ---
 
 ## Mocked Components and APIs
 
-The plugin provides a complete mock of the `react-native` module. Every component renders as a named host element (making snapshots readable), and every API function is a Vitest `vi.fn()` spy.
+Under the `mock` engine, the plugin provides a comprehensive mock of the `react-native` module. Every mocked component renders as a named host element (making snapshots readable), and every mocked API function is a Vitest `vi.fn()` spy.
 
 ### Components (21)
 
@@ -183,16 +232,16 @@ The plugin provides a complete mock of the `react-native` module. Every componen
 
 ## React Native Test Suite Conformance
 
-vitest-native ports tests directly from React Native's own test suite to validate mock behavioral parity. These tests are the same assertions Meta uses to verify React Native itself:
+vitest-native ports tests from React Native's own test suite (Flow stripped, Jest → Vitest) to validate mock behavioral parity — the same checks Meta uses to verify React Native itself:
 
 - **Easing** — all 24 easing curve tests including sample data for quad, cubic, sin, exp, circle, and back
 - **Bezier** — 9 cubic bezier mathematical property tests (symmetry, projection, boundary conditions)
 - **flattenStyle** — 12 style merging tests covering override precedence, reference identity, and recursive flattening
 - **processColor** — 9 color format conversion tests for named colors, RGB, RGBA, HSL, HSLA, and hex
-- **Interpolation** — 9 numeric range mapping tests including extrapolate modes (extend/clamp/identity) and easing
+- **Interpolation** — 12 numeric and string range mapping tests, including string output ranges (`deg`/`%`/arbitrary suffixes) and extrapolate modes (extend/clamp/identity)
 - **Animated** — 36 tests for listeners, events, forkEvent, diffClamp, Color normalization, sequence chaining/interruption/restart, parallel start/stop/no-double-stop, loop iterations/indefinite/interrupt/resetBeforeIteration, delay in sequence, stagger, and value tracking
 
-99 assertions ported from RN's own test suite, all passing.
+102 tests ported from React Native's own test suite, all passing (`vitest run tests/rn-conformance/`). A few edge cases — hex-colour interpolation and infinite input ranges — are skipped and documented in the test files.
 
 ---
 
@@ -341,6 +390,112 @@ export default defineConfig({
 | `presets.asyncStorage()` | @react-native-async-storage/async-storage |
 | `presets.screens()` | react-native-screens |
 | `presets.expo()` | Expo modules |
+
+Presets apply under **both** engines: the mock engine and `engine: 'native'` (where they shadow each
+library's native runtime — worklets, native modules — exactly as Jest does, while the surrounding tree
+renders through real React Native).
+
+### Expo
+
+The `expo` preset shadows the common Expo modules (`expo-constants`, `expo-status-bar`, `expo-font`,
+`expo-asset`, `expo-splash-screen`, `expo-linking`) the way `jest-expo` mocks them. A component that
+imports those renders under the native engine with no extra setup — there's a gated proof in
+`tests-native/expo.test.tsx`. Two honest caveats:
+
+- **Expo modules without a preset** (e.g. `expo-image`, `expo-haptics`) still need a `vi.mock` or a
+  custom preset, just as `jest-expo` ships a mock for each. The native engine externalizes them to
+  Node, so importing the real native module would fail without a stand-in.
+- **Expo SDK trails React Native.** Pin your `react-native` to the version your Expo SDK supports
+  (which is within this plugin's validated range), not the newest RN release.
+
+Full Expo-app validation (a real Expo project's suite end-to-end) is on the roadmap; today the
+guarantee is the presets above plus standard `vi.mock` for the rest.
+
+---
+
+## Migrating from `vitest-react-native`
+
+Used [`vitest-community/vitest-react-native`](https://github.com/vitest-community/vitest-react-native)
+and it broke on a newer Vitest? `vitest-native` is the maintained continuation — same core
+architecture (externalize RN, run its real JS under Node, mock only the native boundary). For the
+common case it's a config swap:
+
+```diff
+- import reactNative from 'vitest-react-native';
+- import react from '@vitejs/plugin-react';
++ import { reactNative } from 'vitest-native';
+  import { defineConfig } from 'vitest/config';
+
+  export default defineConfig({
+-   plugins: [reactNative(), react()],
++   plugins: [reactNative()],
+  });
+```
+
+Named import, and drop `@vitejs/plugin-react` (vitest-native handles the JSX runtime itself). The
+full walkthrough — install, gotchas, what's the same — is in
+**[docs/migrating-from-vitest-react-native.md](docs/migrating-from-vitest-react-native.md)**.
+
+---
+
+## Migrating from Jest
+
+vitest-native ships a small compat layer that clears the mechanical Jest-API coupling in an existing
+suite (the `jest` global, `@jest/globals`, jest-native's extend-expect):
+
+```ts
+// vitest.config.mts
+import { reactNative } from 'vitest-native';
+import { jestCompatAliases, jestCompatSetup } from 'vitest-native/jest-compat';
+
+export default defineConfig({
+  plugins: [reactNative({ engine: 'native' })],
+  resolve: { alias: { ...jestCompatAliases() } },
+  test: { globals: true, setupFiles: [jestCompatSetup] },
+});
+```
+
+This is **not** a turnkey drop-in — a real suite still needs a small per-suite cleanup (convert
+top-level `jest.mock` → `vi.mock`, RNTL ≥ 12, re-record snapshots once with `-u`). The full recipe,
+with a worked real-app example, is in **[docs/migrating-from-jest.md](docs/migrating-from-jest.md)**.
+
+---
+
+## Troubleshooting
+
+**`@react-native/babel-preset not found — using the mock engine`**
+You asked for the default (`auto`) engine but the native babel deps aren't installed, so it
+fell back to the mock engine. To run real React Native, install them:
+
+```bash
+npm i -D @react-native/babel-preset @babel/core
+```
+
+To silence the notice and stay on mock deliberately, set `reactNative({ engine: 'mock' })`.
+
+**`vi.mock('some-rn-library')` doesn't take effect (native engine)**
+Under `engine: 'native'`, React Native and its native-side libraries are *externalized* to Node,
+so they load outside Vite's module graph — and Vitest's mocker only intercepts modules inside that
+graph. Your **own** source modules mock normally; the gap is third-party RN-side packages. Options:
+
+- Use a **[preset](#auto-detect-presets)** if one exists (it shadows the library the way Jest does).
+- For a pure-JS library shipping untranspiled source, add it to the [`transform`](#plugin-options)
+  allowlist so the engine strips its Flow/TS as it loads.
+- Or test that boundary on the **mock engine**, where `vi.mock` applies normally.
+
+**`Unexpected token` / Flow syntax errors from a third-party library (native engine)**
+The require hook strips Flow/TS from `react-native` and active presets, but not from arbitrary
+packages. If a dependency ships untranspiled Flow/TS, add it to the
+[`transform`](#plugin-options) allowlist.
+
+**My `babel.config.js` plugin isn't running**
+Transforms go through Vite/esbuild, not Babel, so custom Babel plugins don't apply. JSX (automatic
+runtime) and RN/preset Flow-stripping are handled for you; for anything else, prefer a Vite plugin
+or a preset.
+
+**Snapshots differ after switching from Jest or the mock engine**
+Real RN computes host props (e.g. `<Text>`'s `accessible`, `allowFontScaling`) that mocks omit, so
+the tree is richer. Re-record once with `npx vitest -u` after migrating.
 
 ---
 
@@ -549,6 +704,8 @@ This prints details about which presets were detected, which modules are being m
 | `vite` | >= 5 |
 | `vitest` | >= 4 |
 | `node` | >= 20 |
+| `react-native` (native engine) | 0.81–0.84 validated |
+| `@react-native/babel-preset` (native engine) | `*` |
 | `@testing-library/react-native` (optional) | >= 12 |
 
 ---

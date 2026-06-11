@@ -13,6 +13,10 @@ import {
   asyncStorage,
   screens,
   expo,
+  deviceInfo,
+  mmkv,
+  svg,
+  webview,
 } from "../src/presets/index.js";
 
 // --- Navigation ---
@@ -455,6 +459,18 @@ describe("preset: reanimated", () => {
     expect(Animated.displayName).toBe("Animated(MyView)");
   });
 
+  it("exposes Animated.View/Text/Image/ScrollView/FlatList components", () => {
+    for (const name of ["View", "Text", "Image", "ScrollView", "FlatList"] as const) {
+      expect(mock[name]).toBeDefined();
+      // forwardRef components are objects with a render fn, not plain functions.
+      expect(["object", "function"]).toContain(typeof mock[name]);
+      expect(mock[name].displayName).toBe(`Animated.${name}`);
+    }
+    // default namespace mirrors the component set (matches `import Animated from`).
+    expect(mock.default.View).toBe(mock.View);
+    expect(typeof mock.default.createAnimatedComponent).toBe("function");
+  });
+
   it("interpolate is callable", () => {
     const result = mock.interpolate(0.5, [0, 1], [0, 100]);
     expect(typeof result).toBe("number");
@@ -658,6 +674,19 @@ describe("preset: gestureHandler", () => {
   it("exposes a Pressable component", () => {
     expect(mock.Pressable).toBeDefined();
     expect(mock.Pressable.displayName).toBe("Pressable");
+  });
+
+  it("exposes the Button components (RectButton, BaseButton, …)", () => {
+    for (const name of [
+      "RectButton",
+      "BaseButton",
+      "BorderlessButton",
+      "RawButton",
+      "PureNativeButton",
+    ] as const) {
+      expect(mock[name], `${name} should be defined`).toBeDefined();
+      expect(mock[name].displayName).toBe(name);
+    }
   });
 });
 
@@ -927,5 +956,79 @@ describe("preset: expo", () => {
     it("setStatusBarHidden is callable", () => {
       expect(() => mock.setStatusBarHidden(true)).not.toThrow();
     });
+  });
+});
+
+// --- Device Info ---
+
+describe("preset: deviceInfo", () => {
+  const mock = deviceInfo().modules["react-native-device-info"].factory();
+
+  it("default object exposes string getters that don't crash on .toLowerCase()", () => {
+    expect(typeof mock.default.getBrandSync()).toBe("string");
+    expect(() => mock.default.getBrandSync().toLowerCase()).not.toThrow();
+  });
+
+  it("sync convenience methods return primitives (hasNotch, getDeviceType)", () => {
+    expect(typeof mock.default.hasNotch()).toBe("boolean");
+    expect(typeof mock.default.getDeviceType()).toBe("string");
+  });
+
+  it("named getUniqueIdSync returns a string; getUniqueId resolves", async () => {
+    expect(typeof mock.getUniqueIdSync()).toBe("string");
+    await expect(mock.getUniqueId()).resolves.toBeTypeOf("string");
+  });
+});
+
+// --- MMKV ---
+
+describe("preset: mmkv", () => {
+  const mock = mmkv().modules["react-native-mmkv"].factory();
+
+  it("MMKV instance round-trips values", () => {
+    const m = new mock.MMKV();
+    m.set("k", "v");
+    expect(m.getString("k")).toBe("v");
+    expect(m.contains("k")).toBe(true);
+    m.delete("k");
+    expect(m.getString("k")).toBeUndefined();
+  });
+
+  it("createMMKV returns independent stores", () => {
+    const a = mock.createMMKV();
+    const b = mock.createMMKV();
+    a.set("x", 1);
+    expect(a.getNumber("x")).toBe(1);
+    expect(b.getNumber("x")).toBeUndefined();
+  });
+
+  it("exposes the MMKV hooks", () => {
+    for (const h of ["useMMKVString", "useMMKVNumber", "useMMKVBoolean", "useMMKVObject"]) {
+      expect(typeof mock[h]).toBe("function");
+    }
+  });
+});
+
+// --- SVG ---
+
+describe("preset: svg", () => {
+  const mock = svg().modules["react-native-svg"].factory();
+
+  it("default is Svg; core elements are renderable host components", () => {
+    expect(mock.default).toBe(mock.Svg);
+    for (const name of ["Svg", "Path", "Circle", "Rect", "G", "Defs"] as const) {
+      expect(mock[name].displayName).toBe(name);
+    }
+  });
+});
+
+// --- WebView ---
+
+describe("preset: webview", () => {
+  const mock = webview().modules["react-native-webview"].factory();
+
+  it("exposes WebView as both default and named, renderable", () => {
+    expect(mock.default).toBe(mock.WebView);
+    expect(mock.WebView.displayName).toBe("WebView");
   });
 });

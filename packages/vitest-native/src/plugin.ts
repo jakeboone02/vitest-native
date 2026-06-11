@@ -7,6 +7,8 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import flowRemoveTypes from "flow-remove-types";
 import { validatePeerDependency, warnUnknownOptions } from "./validate.js";
+import { nativeEngineConfig } from "./native/apply.js";
+import { detectEngine } from "./native/detect.js";
 
 const DEFAULT_ASSET_EXTS = [
   "png",
@@ -71,12 +73,38 @@ async function autoDetectPresets(diagnostics: boolean, projectRoot: string): Pro
   return detected;
 }
 
+/**
+ * Synchronously resolve the export-names of presets whose package is installed.
+ * Used by the native-engine config path (which can't await the factory imports)
+ * to tell the native setup file which preset mocks to build. Returns deduped
+ * preset names (e.g. ["reanimated", "navigation"]).
+ */
+function autoDetectPresetNames(projectRoot: string, diagnostics: boolean): string[] {
+  const req = createRequire(path.join(projectRoot, "package.json"));
+  const names = new Set<string>();
+  for (const [pkgName, exportName] of Object.entries(AUTO_DETECT_PRESETS)) {
+    try {
+      req.resolve(pkgName);
+      names.add(exportName);
+      if (diagnostics) {
+        console.log(`[vitest-native] Auto-detected ${pkgName} → enabled ${exportName} preset`);
+      }
+    } catch {
+      if (diagnostics) {
+        console.log(`[vitest-native] Checked for ${pkgName}: not found, skipping preset`);
+      }
+    }
+  }
+  return [...names];
+}
+
 async function resolveOptions(
   options: VitestNativeOptions = {},
   projectRoot?: string,
 ): Promise<ResolvedOptions> {
   const platform = options.platform ?? "ios";
   const diagnostics = options.diagnostics ?? false;
+  const engine: "mock" | "native" = options.engine === "native" ? "native" : "mock";
   const userExts = (options.assetExts ?? []).map((e) => e.replace(/^\./, ""));
 
   // If user provided presets explicitly, use those. Otherwise auto-detect.
@@ -89,6 +117,7 @@ async function resolveOptions(
 
   return {
     platform,
+    engine,
     diagnostics,
     extensions: getPlatformExtensions(platform),
     presets,
@@ -252,16 +281,38 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
     }
   }
 
+  // Native-engine setup file (shipped verbatim as dist/native/setup.mjs; the src
+  // tree mirrors that layout so both built and source resolution find it here).
+  const nativeSetupPath = path.resolve(thisDir, "native/setup.mjs");
+  // Hot-runtime worker entry + runner (shipped verbatim alongside the setup file).
+  const nativeWorkerPath = path.resolve(thisDir, "native/worker.mjs");
+  const nativeRunnerPath = path.resolve(thisDir, "native/runner.mjs");
+
   // Platform extensions can be computed eagerly.
   const platform = options?.platform ?? "ios";
   const diagnostics = options?.diagnostics ?? false;
+  // Capture the user-requested engine; concrete resolution happens in config().
+  const requestedEngine = options?.engine ?? "auto";
+  // Extra node_modules packages the native engine should transform (Flow/TS/JSX).
+  const transformPkgs = (options?.transform ?? []).filter(
+    (p) => typeof p === "string" && p.length > 0,
+  );
+  // Hot runtime (native engine only): persistent RN-hot workers with per-file
+  // isolation via the custom pool. Opt-in while it bakes (see design doc).
+  const hotRuntimeOpt = options?.hotRuntime ?? false;
+  const hotRuntime = hotRuntimeOpt !== false;
+  const hotRecycle = typeof hotRuntimeOpt === "object" ? hotRuntimeOpt : {};
+  // Resolved at config() time, once the consumer project root is known. Seeded to a
+  // safe default so the hooks (resolveId/load/transform), which run after config(),
+  // never read undefined.
+  let engine: "mock" | "native" = requestedEngine === "native" ? "native" : "mock";
   const extensions = getPlatformExtensions(platform);
 
   return {
     name: "vitest-native",
     enforce: "pre",
 
-    config(userConfig, _env) {
+    async config(userConfig, _env) {
       // Serialize options that need to cross from the Vite main process
       // into Vitest worker processes. globalThis does NOT survive this
       // boundary — we use test.env to inject process.env vars instead.
@@ -271,12 +322,54 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
       // This must happen here (not configResolved) because test.env
       // is captured before configResolved runs.
       const resolvedRoot = userConfig.root ? path.resolve(userConfig.root) : process.cwd();
+      // Resolve the concrete engine now that the project root is known. Default
+      // (auto) prefers native when RN's Babel deps resolve; silently, with a notice
+      // only when it must fall back to mock. See detect.ts / AUTO_PREFERS_NATIVE.
+      const decision = detectEngine(requestedEngine, resolvedRoot);
+      engine = decision.engine;
+      if (decision.notice) console.log(decision.notice);
       const env: Record<string, string> = {
         VITEST_NATIVE_PLATFORM: platform,
         VITEST_NATIVE_DIAGNOSTICS: String(diagnostics),
         VITEST_NATIVE_PROJECT_ROOT: resolvedRoot,
       };
 
+      // Native engine: externalize RN so it loads through Node's single CJS graph,
+      // where the native setup file's hooks Flow-strip it and mock the boundary.
+      if (engine === "native") {
+        // Third-party presets apply to the native engine too: native-runtime libs
+        // (Reanimated worklets, gesture-handler natives) can't run in Node and must
+        // be shadowed by the same self-contained mocks the mock engine uses. We
+        // resolve which presets are active here (sync) and hand the names to the
+        // native setup file via env; it builds the mocks in-worker. The actual
+        // import redirection happens in resolveId/load (virtual:preset modules).
+        const nativePresetNames = options?.presets
+          ? options.presets.map((p) => p.name)
+          : autoDetectPresetNames(resolvedRoot, diagnostics);
+        if (nativePresetNames.length > 0) {
+          env.VITEST_NATIVE_PRESET_NAMES = JSON.stringify(nativePresetNames);
+        }
+        // Lazy import: pulls in vitest/node, which only exists when running
+        // under Vitest (not plain Vite) — and only the hot runtime needs it.
+        const hot = hotRuntime
+          ? {
+              pool: (await import("./native/pool.js")).nativePool({
+                workerEntry: nativeWorkerPath,
+                recycleAfterFiles: hotRecycle.recycleAfterFiles,
+                memoryLimit: hotRecycle.memoryLimit,
+              }),
+              runnerPath: nativeRunnerPath,
+            }
+          : undefined;
+        return nativeEngineConfig(nativeSetupPath, env, transformPkgs, hot);
+      }
+
+      // --- mock engine (existing behaviour) ---
+      if (hotRuntime) {
+        console.warn(
+          `[vitest-native] 'hotRuntime' only applies to engine:'native' (resolved engine: '${engine}'); ignoring.`,
+        );
+      }
       // Custom mock overrides (validated above to be serializable).
       if (options?.mocks && Object.keys(options.mocks).length > 0) {
         env.VITEST_NATIVE_MOCKS = JSON.stringify(options.mocks);
@@ -290,9 +383,17 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
       }
 
       return {
+        // Match RN's Babel preset: automatic JSX runtime, so app/test files using
+        // JSX without importing React compile to `react/jsx-runtime` rather than
+        // `React.createElement` ("React is not defined").
+        esbuild: { jsx: "automatic" as const },
         resolve: {
           extensions,
           conditions: ["react-native"],
+          // Single React instance across test code, the mock, and the renderer —
+          // avoids a null hooks dispatcher from duplicate react copies in some
+          // consumer projects (e.g. mock FlatList's useImperativeHandle).
+          dedupe: ["react", "react-test-renderer", "react-is"],
         },
         test: {
           setupFiles: [setupFilePath],
@@ -327,6 +428,8 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
 
       // Now we have the real project root — resolve options from consumer context.
       resolved = await resolveOptions(options, config.root);
+      // The authoritative engine is the one decided in config(); keep ResolvedOptions in sync.
+      resolved.engine = engine;
 
       // Build preset module lookup and read static export names.
       // Export names are declared statically on each preset module so they
@@ -344,6 +447,15 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
     },
 
     resolveId(source, importer) {
+      // Native engine handles RN entirely in Node's CJS graph — no virtualization
+      // of react-native itself. But third-party preset modules (Reanimated, etc.)
+      // are still redirected to virtual mocks: their native runtimes can't load in
+      // Node, so they must be shadowed exactly as under the mock engine.
+      if (engine === "native") {
+        if (presetModules.has(source)) return `\0virtual:preset:${source}`;
+        return undefined;
+      }
+
       // Redirect react-native root import to a virtual module.
       // The real mock is wired up by vi.mock() in the setup file.
       if (source === "react-native") {
@@ -404,6 +516,30 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
     },
 
     load(id) {
+      // Preset virtual modules — served for BOTH engines. Under native this is the
+      // only virtualization (react-native itself loads from Node's CJS graph). The
+      // generated module reads named exports from the runtime mock stored on
+      // globalThis by the (mock or native) setup file.
+      if (id.startsWith("\0virtual:preset:")) {
+        const cached = virtualCodeCache.get(id);
+        if (cached) return cached;
+
+        const moduleName = id.slice("\0virtual:preset:".length);
+        const exportNames = presetExportNames.get(moduleName) || [];
+        const code = [
+          `const _m = (globalThis.__vitest_native_preset_mocks || {})['${moduleName}'] || {};`,
+          ...exportNames.map((n) => `export const ${n} = _m['${n}'];`),
+          // Honor a factory-provided default (e.g. svg's default Svg component);
+          // only fall back to the namespace object when the mock has none.
+          `export default ('default' in _m ? _m['default'] : _m);`,
+        ].join("\n");
+        virtualCodeCache.set(id, code);
+        return code;
+      }
+
+      // Native engine serves RN from Node's CJS graph — nothing else to load here.
+      if (engine === "native") return undefined;
+
       // The root react-native module — re-export nothing.
       // vi.mock('react-native') in setup.ts provides the actual mock.
       if (id === "\0virtual:react-native") {
@@ -427,24 +563,6 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
         return code;
       }
 
-      // Preset virtual modules — serve named exports from the runtime mock
-      // stored on globalThis by setup.ts. The export names are discovered
-      // at config time by calling the preset factory.
-      if (id.startsWith("\0virtual:preset:")) {
-        const cached = virtualCodeCache.get(id);
-        if (cached) return cached;
-
-        const moduleName = id.slice("\0virtual:preset:".length);
-        const exportNames = presetExportNames.get(moduleName) || [];
-        const code = [
-          `const _m = (globalThis.__vitest_native_preset_mocks || {})['${moduleName}'] || {};`,
-          ...exportNames.map((n) => `export const ${n} = _m['${n}'];`),
-          `export default _m;`,
-        ].join("\n");
-        virtualCodeCache.set(id, code);
-        return code;
-      }
-
       // Stub binary/font/media asset imports with their basename string,
       // matching React Native's packager behaviour.
       const fsPath = stripFsPrefix(id);
@@ -457,6 +575,9 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
     },
 
     transform(code, id) {
+      // Native engine Flow-strips RN in Node's loader hooks, not Vite's pipeline.
+      if (engine === "native") return undefined;
+
       // Strip Flow type annotations from React Native source files.
       // RN's source is written in Flow and cannot be executed directly in Node.
       // Currently a no-op (all RN imports resolve to virtual modules), but

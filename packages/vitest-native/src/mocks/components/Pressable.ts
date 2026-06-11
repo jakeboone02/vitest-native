@@ -1,28 +1,10 @@
 import React from "react";
+import { buildPressableHostProps } from "./pressableHost.js";
 
 export function createPressableMock() {
-  const Pressable = React.forwardRef((props: any, ref: any) => {
-    const { disabled, accessibilityState, ...rest } = props;
-    // Match real RN: Pressable is accessible by default, and
-    // translates `disabled` prop into accessibilityState.
-    const mergedA11yState =
-      disabled || accessibilityState
-        ? { ...accessibilityState, ...(disabled ? { disabled: true } : {}) }
-        : undefined;
-    // Strip press handlers when disabled to match real RN behavior.
-    if (disabled) {
-      delete rest.onPress;
-      delete rest.onPressIn;
-      delete rest.onPressOut;
-      delete rest.onLongPress;
-    }
-    return React.createElement("Pressable", {
-      accessible: true,
-      ...rest,
-      ...(mergedA11yState ? { accessibilityState: mergedA11yState } : {}),
-      ref,
-    });
-  });
+  const Pressable = React.forwardRef((props: any, ref: any) =>
+    React.createElement("Pressable", buildPressableHostProps(props, ref)),
+  );
   Pressable.displayName = "Pressable";
   return Pressable;
 }

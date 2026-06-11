@@ -212,6 +212,18 @@ export interface VitestNativeOptions {
   platform?: "ios" | "android";
 
   /**
+   * Test engine.
+   * - 'mock'   — pure-JS reimplementation of React Native (fastest, lower fidelity).
+   * - 'native' — runs real React Native JS, mocking only the native boundary
+   *              (Jest-level fidelity).
+   * - 'auto'   — picks automatically. Currently resolves to 'mock'; when
+   *              '@react-native/babel-preset' is present it recommends 'native'
+   *              (becomes the default in v1).
+   * Default: 'auto'.
+   */
+  engine?: "auto" | "mock" | "native";
+
+  /**
    * Built-in third-party library presets. When provided, only these presets
    * are used. When omitted, vitest-native auto-detects installed packages
    * and enables matching presets automatically.
@@ -246,10 +258,43 @@ export interface VitestNativeOptions {
 
   /** Additional asset file extensions to stub (e.g. ['.lottie', '.m4b']) */
   assetExts?: string[];
+
+  /**
+   * `engine: 'native'` only. Names of additional node_modules packages whose
+   * source the native engine should transform (Flow/TS/JSX stripped) as it
+   * loads them. By default only `react-native` / `@react-native` are
+   * transformed; third-party RN libraries that ship untranspiled source
+   * (e.g. `react-native-reanimated`, `react-native-safe-area-context`) need to
+   * be listed here, analogous to Jest's `transformIgnorePatterns` allowlist.
+   *
+   * @example
+   * ```ts
+   * reactNative({ engine: 'native', transform: ['react-native-reanimated'] })
+   * ```
+   */
+  transform?: string[];
+
+  /**
+   * `engine: 'native'` only. **Experimental.** Run tests in persistent
+   * RN-hot workers: React Native's module graph loads once per worker and
+   * stays resident across test files, while each file still gets a fresh
+   * Vitest module runner (per-file isolation of your app/test modules).
+   * Uses a custom Vitest pool + worker entry + runner; requires Vitest >= 4.
+   *
+   * Pass an object to tune worker recycling (self-defense against suites that
+   * leak process-wide resources the per-file reset can't reclaim):
+   * - `recycleAfterFiles`: retire a worker after it has run N test files.
+   * - `memoryLimit`: retire a worker when its JS heap (bytes) after a test
+   *   file meets or exceeds this value.
+   *
+   * Default: false (each file runs in a fresh worker; RN reloads per file).
+   */
+  hotRuntime?: boolean | { recycleAfterFiles?: number; memoryLimit?: number };
 }
 
 export interface ResolvedOptions {
   platform: "ios" | "android";
+  engine: "mock" | "native";
   diagnostics: boolean;
   extensions: string[];
   presets: Preset[];

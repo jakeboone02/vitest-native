@@ -1,8 +1,8 @@
 {
   "name": "vitest-native",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
-  "description": "A Vitest plugin for React Native. One install, zero config.",
+  "description": "Run real React Native tests under Vitest. One install, zero config.",
   "license": "MIT",
   "author": "Daniel Fry",
   "repository": {
@@ -87,10 +87,33 @@
         "types": "./dist/matchers.d.cts",
         "default": "./dist/matchers.cjs"
       }
+    },
+    "./jest-compat": {
+      "import": {
+        "types": "./dist/jest-compat.d.mts",
+        "default": "./dist/jest-compat.mjs"
+      },
+      "require": {
+        "types": "./dist/jest-compat.d.cts",
+        "default": "./dist/jest-compat.cjs"
+      }
+    },
+    "./jest-compat/setup": {
+      "types": "./dist/jest-compat/setup.d.mts",
+      "default": "./dist/jest-compat/setup.mjs"
+    },
+    "./jest-compat/jest-globals": {
+      "types": "./dist/jest-compat/jest-globals.d.mts",
+      "default": "./dist/jest-compat/jest-globals.mjs"
+    },
+    "./jest-compat/extend-expect-noop": {
+      "types": "./dist/jest-compat/noop.d.mts",
+      "default": "./dist/jest-compat/noop.mjs"
     }
   },
   "files": [
     "dist",
+    "docs",
     "LICENSE",
     "CHANGELOG.md"
   ],
@@ -105,19 +128,38 @@
     "react": ">=18",
     "vite": ">=5",
     "vitest": ">=4",
-    "@testing-library/react-native": ">=12"
+    "@testing-library/react-native": ">=12",
+    "@react-native/babel-preset": "*",
+    "@babel/core": "*"
   },
   "peerDependenciesMeta": {
     "@testing-library/react-native": {
       "optional": true
+    },
+    "@react-native/babel-preset": {
+      "optional": true
+    },
+    "@babel/core": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "@babel/core": "^7.29.7",
+    "@react-native/babel-preset": "^0.85.3",
+    "@react-navigation/native": "^7.2.5",
+    "@react-navigation/native-stack": "^7.16.0",
     "@testing-library/react-native": "^12.9.0",
     "@types/node": "^25.3.5",
     "@types/react": "^19.2.14",
+    "@vitest/coverage-v8": "4.0.18",
+    "expo-constants": "^56.0.18",
+    "expo-status-bar": "^56.0.4",
     "react": "^19.0.0",
     "react-native": "^0.84.1",
+    "react-native-gesture-handler": "^3.0.0",
+    "react-native-reanimated": "4.3.1",
+    "react-native-safe-area-context": "^5.8.0",
+    "react-native-worklets": "^0.9.1",
     "react-test-renderer": "^19.0.0",
     "tsdown": "^0.21.0",
     "typescript": "^5.7.0",
@@ -127,15 +169,19 @@
   "scripts": {
     "build": "tsdown",
     "test": "vitest run",
+    "test:native": "vitest run --config tests-native/vitest.config.mts",
+    "test:native:hot": "vitest run --config tests-native/vitest.hot.config.mts",
     "lint": "oxlint --deny-warnings src/ tests/",
     "format": "oxfmt --write src/ tests/",
     "format:check": "oxfmt --check src/ tests/",
     "check-compat": "bun scripts/check-compat.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "prepublishOnly": "bun run build && bun run test && bun run lint && bun run typecheck"
+    "prepublishOnly": "bun run build && bun run test && bun run lint && bun run typecheck",
+    "crosscheck": "node scripts/crosscheck.mjs"
   },
   "dependencies": {
-    "flow-remove-types": "^2.304.0"
+    "flow-remove-types": "^2.304.0",
+    "magic-string": "^0.30.21"
   }
 }

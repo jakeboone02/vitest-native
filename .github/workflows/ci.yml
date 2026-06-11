@@ -44,6 +44,18 @@ jobs:
       - name: Test
         run: bun run test
 
+      - name: Native engine tests
+        run: bun run test:native
+
+      - name: Native engine tests (hot runtime)
+        # The hot runtime rides @experimental Vitest internals (vitest/worker,
+        # ThreadsPoolWorker, poolRunner) — the most churn-prone surface we depend
+        # on, so gate it on every PR, not just the weekly matrix.
+        run: bun run test:native:hot
+
+      - name: Cross-check (mock ≡ real RN)
+        run: bun run crosscheck
+
       - name: Test example app
         run: bun run test:example
 
@@ -52,4 +64,7 @@ jobs:
           cd packages/vitest-native
           npm pack --pack-destination ../../
           cd ../..
-          npx --yes @arethetypeswrong/cli vitest-native-*.tgz --ignore-rules no-resolution
+          # cjs-resolves-to-esm: the jest-compat runtime subpaths are intentionally
+          # ESM-only (they depend on vitest, which is ESM-only); CJS consumers use
+          # dynamic import. They are setup-file / Vite-alias targets, not typed imports.
+          npx --yes @arethetypeswrong/cli vitest-native-*.tgz --ignore-rules no-resolution cjs-resolves-to-esm
