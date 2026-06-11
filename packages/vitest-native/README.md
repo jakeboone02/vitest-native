@@ -64,6 +64,16 @@ yarn add -D vitest-native
 pnpm add -D vitest-native
 ```
 
+A real React Native project already provides what the native engine needs —
+`react-native`, `@react-native/babel-preset`, and `@babel/core`. Add
+`@testing-library/react-native` if you don't have it yet (the examples below use it):
+
+```bash
+npm install -D @testing-library/react-native
+```
+
+See [Requirements](#requirements) for exact versions.
+
 ---
 
 ## Quick Start
@@ -245,7 +255,7 @@ vitest-native ports tests from React Native's own test suite (Flow stripped, Jes
 - **Interpolation** — 12 numeric and string range mapping tests, including string output ranges (`deg`/`%`/arbitrary suffixes) and extrapolate modes (extend/clamp/identity)
 - **Animated** — 36 tests for listeners, events, forkEvent, diffClamp, Color normalization, sequence chaining/interruption/restart, parallel start/stop/no-double-stop, loop iterations/indefinite/interrupt/resetBeforeIteration, delay in sequence, stagger, and value tracking
 
-102 tests ported from React Native's own test suite, all passing (`vitest run tests/rn-conformance/`). A few edge cases — hex-colour interpolation and infinite input ranges — are skipped and documented in the test files.
+118 tests ported from React Native's own test suite — 115 passing, with 3 edge cases (hex-colour interpolation and infinite input ranges) skipped and documented in the test files (`vitest run tests/rn-conformance/`).
 
 ---
 

@@ -1,5 +1,21 @@
 # vitest-native
 
+## 0.4.1
+
+### Patch Changes
+
+Documentation fixes (the README is consumers' primary reference):
+
+- **Quick Start now runs as written.** It used bare `test()`/`expect()` with no
+  import, but the plugin does not enable Vitest globals — copying it produced
+  `test is not defined`. Added the `import { test, expect } from 'vitest'` and a
+  note on the `globals: true` alternative.
+- **Installation** notes the companion dependencies the examples need
+  (`@testing-library/react-native`; a real RN app already provides `react-native`
+  + `@react-native/babel-preset` + `@babel/core`).
+- Corrected the RN-conformance count (118 ported: 115 passing, 3 documented skips).
+- "Spiritual successor" → "Maintained successor" wording, with a migration link.
+
 ## 0.4.0
 
 **The native engine is now the zero-config default.** `reactNative()` with no
